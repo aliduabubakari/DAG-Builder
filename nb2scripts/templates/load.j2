@@ -1,0 +1,38 @@
+def run_load_operation_{{ index }}(config: Config, file_manager: PipelineFileManager):
+    """
+    Load operation: {{ op.name }}
+    {% if op.meta.description -%}
+    Description: {{ op.meta.description }}
+    {%- endif %}
+    """
+    logger.info("=== STARTING LOAD OPERATION: {{ op.name }} ===")
+    
+    # Set up API managers
+    auth_manager = AuthManager(config.auth_api_url, config.username, config.password)
+    token = auth_manager.get_token()
+    table_manager = TableManager(config.table_base_url, auth_manager)
+    dataset_manager = DatasetManager(config.table_base_url, auth_manager)
+    utility = Utility(config.table_base_url, auth_manager)
+    
+    # Enhanced notebook code (syntax-corrected):
+    {% if op.meta.fixed_code -%}
+{{ op.meta.fixed_code | indent(4, first=true) }}
+    {% else -%}
+    {% for cell in op.code_cells -%}
+    # --- Cell {{ loop.index }} ---
+{{ cell.source | indent(4, first=true) }}
+    
+    {% endfor -%}
+    {% endif %}
+    
+    # Ensure we have table_id for next stages
+    if 'table_id' not in locals():
+        raise RuntimeError("table_id not created in load operation")
+    
+    # Store results for next stage
+    table_data = table_manager.get_table(config.dataset_id, table_id)
+    file_manager.save_stage_snapshot(f"load_{{ index }}", table_data, config.stage_number)
+    file_manager.save_current_state(table_data)
+    
+    logger.info("=== LOAD OPERATION COMPLETED ===")
+    return table_data

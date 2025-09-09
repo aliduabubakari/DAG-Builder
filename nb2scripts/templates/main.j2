@@ -1,0 +1,99 @@
+def run_{{ script.name | clean_name }}(config: Config):
+    """Main execution function for {{ script.name }}."""
+    
+    logger.info("=== STARTING {{ script.name.upper() }} PROCESS (HYBRID) ===")
+    
+    # Initialize file manager
+    file_manager = PipelineFileManager(config.data_dir, config.run_id)
+    
+    # Save pipeline configuration
+    pipeline_config = {
+        'script': '{{ script.name }}',
+        'stage': config.stage_name,
+        'stage_number': config.stage_number,
+        'operations': [
+{%- for op in operations %}
+            {'type': '{{ op.op_type }}', 'name': '{{ op.name | replace("'", "_") | replace('"', '_') }}'},
+{%- endfor %}
+        ],
+        'run_id': config.run_id,
+        'timestamp': datetime.datetime.now().isoformat(),
+        'architecture': 'hybrid'
+    }
+    
+    file_manager.save_pipeline_config(pipeline_config)
+    logger.info("Pipeline configuration saved")
+    
+    # Execute operations in sequence
+    results = []
+{%- for op in operations %}
+    result_{{ loop.index }} = run_{{ op.op_type }}_operation_{{ loop.index }}(config, file_manager)
+    results.append(result_{{ loop.index }})
+{%- endfor %}
+    
+    # Save final metrics
+    stage_metrics = {
+        'script': '{{ script.name }}',
+        'operations_completed': {{ operations | length }},
+        'completed_at': datetime.datetime.now().isoformat(),
+        'current_file': file_manager.get_current_file_path(),
+        'architecture': 'hybrid'
+    }
+    
+    file_manager.save_stage_metrics(config.stage_name, stage_metrics)
+    
+    logger.info("=== {{ script.name.upper() }} PROCESS COMPLETED (HYBRID) ===")
+    logger.info(f"📄 Audit trail: {file_manager.get_run_log_dir()}")
+    logger.info(f"🔄 Next task input: {file_manager.get_current_file_path()}")
+    
+    return file_manager.get_current_file_path()
+
+def main():
+    logger.info("Starting {{ script.name }} process (hybrid architecture)...")
+    
+    run_id = os.environ.get('RUN_ID')
+    input_file = os.environ.get('INPUT_FILE_PATH', 'unknown')
+    
+    start_time, start_cpu, start_memory, tracker = start_sustainability_metrics("{{ script.name }}", run_id)
+    
+    exit_code = 1
+    output_path = None
+
+    try:
+        config = Config()
+        output_path = run_{{ script.name | clean_name }}(config)
+        
+        logger.info("✅ {{ script.name }} completed successfully!")
+        exit_code = 0
+
+    except Exception as e:
+        logger.exception(f"❌ Error in {{ script.name }}: {e}")
+        
+    finally:
+        emissions = tracker.stop() if tracker else 0
+        save_sustainability_metrics(
+            '{{ script.name }}', 
+            start_time, 
+            start_cpu, 
+            start_memory, 
+            emissions,
+            run_id,
+            {
+                'input_file': input_file,
+                'output_file': output_path,
+                'dataset_id': os.environ.get('DATASET_ID', '5'),
+                'success': exit_code == 0,
+                'stage_name': os.environ.get('STAGE_NAME', '{{ script.name }}'),
+                'stage_number': os.environ.get('STAGE_NUMBER', '{{ script.stage }}'),
+                'architecture': 'hybrid'
+            }
+        )
+        
+        # Print output path for XCom (HYBRID: This is key!)
+        if output_path and exit_code == 0:
+            print(output_path)
+
+    sys.exit(exit_code)
+
+if __name__ == "__main__":
+    main()

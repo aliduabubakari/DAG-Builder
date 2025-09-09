@@ -1,0 +1,156 @@
+# dags/{{ dag_name }}.py
+
+from __future__ import annotations
+import os
+import pendulum
+from datetime import datetime
+from airflow.models.dag import DAG
+from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.operators.python import PythonOperator
+from docker.types import Mount
+
+# Configuration
+HOST_DATA_DIR = "/app/data"
+AIRFLOW_DATA_DIR = "/app/data"
+
+def find_latest_csv_file(**kwargs):
+    """Find the most recently modified CSV file."""
+    import glob
+    
+    run_id = kwargs['params']['run_id']
+    
+    search_path = os.path.join(AIRFLOW_DATA_DIR, '*.csv')
+    files = glob.glob(search_path)
+    if not files:
+        raise FileNotFoundError(f"No CSV files found in {AIRFLOW_DATA_DIR}")
+    
+    latest_file = max(files, key=os.path.getmtime)
+    print(f"Found latest CSV file: {latest_file}")
+    print(f"Using shared run ID: {run_id}")
+    return latest_file
+
+def cleanup_successful_run(**kwargs):
+    """Clean up current file on successful completion."""
+    from scripts.utils.file_utils import PipelineFileManager
+    
+    run_id = kwargs['params']['run_id']
+    data_dir = AIRFLOW_DATA_DIR
+    
+    print(f"Pipeline completed successfully! Run ID: {run_id}")
+    print(f"All stages completed: {{ stage_names | join(' → ') }}")
+    
+    file_manager = PipelineFileManager(data_dir, run_id)
+    
+    # Show final results
+    current_file = file_manager.get_current_file_path()
+    run_log_dir = file_manager.get_run_log_dir()
+    
+    if os.path.exists(current_file):
+        file_size = os.path.getsize(current_file)
+        print(f"Final result file: {current_file} ({file_size} bytes)")
+    
+    if os.path.exists(run_log_dir):
+        log_files = os.listdir(run_log_dir)
+        print(f"Audit trail contains {len(log_files)} files: {log_files}")
+    
+    print("Keeping all files for inspection. To enable auto-cleanup, uncomment the cleanup line.")
+    # Uncomment the next line if you want automatic cleanup:
+    # file_manager.cleanup_current_file()
+
+# Run ID template for consistency across tasks
+DAG_RUN_ID_TEMPLATE = "{{ "{{ ds_nodash }}_{{ ts_nodash }}" }}"
+
+with DAG(
+    dag_id="{{ dag_id }}",
+    start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
+    catchup=False,
+    schedule=None,
+    doc_md="""{{ dag_documentation }}""",
+    tags={{ dag_tags | tojson }},
+    params={
+        "dag_run_id": DAG_RUN_ID_TEMPLATE,
+        "architecture": "hybrid_generated"
+    }
+) as dag:
+
+    # Task 1: Find input CSV file
+    find_input_file_task = PythonOperator(
+        task_id="find_input_file",
+        python_callable=find_latest_csv_file,
+        params={
+            "run_id": DAG_RUN_ID_TEMPLATE
+        },
+        doc_md="""
+        Discovers the most recent CSV file in the data directory.
+        Returns file path via XCom for processing pipeline.
+        """
+    )
+
+{% for script in scripts %}
+{%- set task_var_name = script.name | replace('01_', 'load_') | replace('02_', 'reconcile_poi_') | replace('03_', 'reconcile_place_') | replace('04_', 'extend_poi_') | replace('-', '_') -%}
+    # Task {{ loop.index + 1 }}: {{ script.name | title | replace('_', ' ') }}
+    {{ task_var_name }}_task = DockerOperator(
+        task_id="{{ script.name }}",
+        image="semt-pipeline:latest",
+        command=["python", "/app/scripts/{{ script.filename }}"],
+        environment={
+            # HYBRID: Run management
+            "RUN_ID": DAG_RUN_ID_TEMPLATE,
+            "STAGE_NAME": "{{ script.stage_name }}",
+            "STAGE_NUMBER": "{{ script.stage }}",
+            
+            # Input from previous task (XCom)
+{% if loop.index == 1 %}
+            "INPUT_FILE_PATH": "{{ "{{ ti.xcom_pull(task_ids='find_input_file') }}" }}",
+{% else %}
+{%- set prev_task_var = scripts[loop.index-2].name | replace('01_', 'load_') | replace('02_', 'reconcile_poi_') | replace('03_', 'reconcile_place_') | replace('04_', 'extend_poi_') | replace('-', '_') -%}
+            "INPUT_JSON_PATH": "{{ "{{ ti.xcom_pull(task_ids='" + scripts[loop.index-2].name + "') }}" }}",
+{% endif %}
+            
+            # Script-specific configuration
+{% for key, value in script.env_vars.items() %}
+            "{{ key }}": "{{ value }}",
+{% endfor %}
+            
+            # API Configuration
+            "API_BASE_URL": "http://node-server-api:3003",
+            "API_USERNAME": "{{ "{{ conn.node_server_api.login }}" }}",
+            "API_PASSWORD": "{{ "{{ conn.node_server_api.password }}" }}",
+            
+            # File system
+            "DATA_DIR": "/app/data",
+        },
+        do_xcom_push=True,  # HYBRID: Push current file path to XCom
+        auto_remove=True,
+        docker_url="unix://var/run/docker.sock",
+        network_mode="semt_pipeline_network",
+        mounts=[Mount(source=HOST_DATA_DIR, target="/app/data", type="bind")],
+        mount_tmp_dir=False,
+        doc_md="""{{ script.documentation }}"""
+    )
+
+{% endfor %}
+    # Final Task: Cleanup
+    cleanup_task = PythonOperator(
+        task_id="cleanup_successful_run",
+        python_callable=cleanup_successful_run,
+        params={
+            "run_id": DAG_RUN_ID_TEMPLATE
+        },
+        trigger_rule="all_success",
+        doc_md="""
+        Summarizes pipeline results and optionally cleans up working files.
+        Currently configured to preserve all files for inspection.
+        """
+    )
+
+    # Define pipeline dependencies
+{%- set first_task = scripts[0].name | replace('01_', 'load_') | replace('02_', 'reconcile_poi_') | replace('03_', 'reconcile_place_') | replace('04_', 'extend_poi_') | replace('-', '_') %}
+    find_input_file_task >> {{ first_task }}_task
+{%- for script in scripts[1:] %}
+{%- set current_task = script.name | replace('01_', 'load_') | replace('02_', 'reconcile_poi_') | replace('03_', 'reconcile_place_') | replace('04_', 'extend_poi_') | replace('-', '_') %}
+{%- set prev_task = scripts[loop.index-1].name | replace('01_', 'load_') | replace('02_', 'reconcile_poi_') | replace('03_', 'reconcile_place_') | replace('04_', 'extend_poi_') | replace('-', '_') %}
+    {{ prev_task }}_task >> {{ current_task }}_task
+{%- endfor %}
+{%- set last_task = scripts[-1].name | replace('01_', 'load_') | replace('02_', 'reconcile_poi_') | replace('03_', 'reconcile_place_') | replace('04_', 'extend_poi_') | replace('-', '_') %}
+    {{ last_task }}_task >> cleanup_task

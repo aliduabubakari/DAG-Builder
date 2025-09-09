@@ -1,0 +1,151 @@
+# dags/{{ dag_name }}.py
+# Simplified fallback DAG - auto-generated
+
+from __future__ import annotations
+import os
+import pendulum
+from airflow.models.dag import DAG
+from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.operators.python import PythonOperator
+from docker.types import Mount
+
+DAG_RUN_ID_TEMPLATE = "{{ "{{ ds_nodash }}_{{ ts_nodash }}" }}"
+
+def find_latest_csv_file(**kwargs):
+    """Find the most recently modified CSV file."""
+    import glob
+    search_path = os.path.join("/app/data", "*.csv")
+    files = glob.glob(search_path)
+    if not files:
+        raise FileNotFoundError("No CSV files found in /app/data")
+    return max(files, key=os.path.getmtime)
+
+with DAG(
+    dag_id="{{ dag_id }}",
+    start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
+    catchup=False,
+    schedule=None,
+    tags=["generated", "fallback"],
+    params={
+        "dag_run_id": DAG_RUN_ID_TEMPLATE,
+        "architecture": "hybrid_generated"
+    }
+) as dag:
+
+    find_input_file_task = PythonOperator(
+        task_id="find_input_file",
+        python_callable=find_latest_csv_file,
+    )
+
+{% for script in scripts %}
+    {{ script.name | replace('-', '_') | replace('.', '_') }}_task = DockerOperator(
+        task_id="{{ script.name }}",
+        image="semt-pipeline:latest",
+        command=["python", "/app/scripts/{{ script.filename }}"],
+        environment={
+            "RUN_ID": DAG_RUN_ID_TEMPLATE,
+            "STAGE_NAME": "{{ script.stage_name }}",
+            "STAGE_NUMBER": "{{ script.stage }}",
+{% if loop.index == 1 %}
+            "INPUT_FILE_PATH": "{{ "{{ ti.xcom_pull(task_ids='find_input_file') }}" }}",
+{% else %}
+            "INPUT_JSON_PATH": "{{ "{{ ti.xcom_pull(task_ids='" + scripts[loop.index-2].name + "') }}" }}",
+{% endif %}
+            "API_BASE_URL": "http://node-server-api:3003",
+            "DATA_DIR": "/app/data",
+{% for key, value in script.env_vars.items() %}
+            "{{ key }}": "{{ value }}",
+{% endfor %}
+        },
+        do_xcom_push=True,
+        auto_remove=True,
+        docker_url="unix://var/run/docker.sock",
+        network_mode="semt_pipeline_network",
+        mounts=[Mount(source="/app/data", target="/app/data", type="bind")],
+        mount_tmp_dir=False,
+    )
+
+{% endfor %}
+    # Define dependencies
+    find_input_file_task >> {{ scripts[0].name | replace('-', '_') | replace('.', '_') }}_task
+{% for script in scripts[1:] %}
+    {{ scripts[loop.index-1].name | replace('-', '_') | replace('.', '_') }}_task >> {{ script.name | replace('-', '_') | replace('.', '_') }}_task
+{% endfor %}
+```
+
+### 3. Updated DAG Generator with Fallback Template and LLM Post-Processing
+
+```python
+# Update the _generate_fallback_dag method in dag_generator.py
+
+def _generate_fallback_dag(self, dag_name: str, scripts: List[Dict]) -> str:
+    """Generate a simple fallback DAG using template if main template fails."""
+    
+    try:
+        fallback_template = self.jinja_env.get_template("dag_fallback.j2")
+        
+        template_vars = {
+            'dag_name': dag_name,
+            'dag_id': dag_name.lower().replace(' ', '_').replace('-', '_'),
+            'scripts': scripts
+        }
+        
+        self.logger.info("📝 Using fallback DAG template")
+        return fallback_template.render(**template_vars)
+        
+    except Exception as e:
+        self.logger.error(f"❌ Fallback template also failed: {e}")
+        # Last resort: minimal hardcoded DAG
+        return self._generate_minimal_dag(dag_name, scripts)
+
+def _generate_minimal_dag(self, dag_name: str, scripts: List[Dict]) -> str:
+    """Generate minimal DAG as last resort."""
+    
+    task_definitions = []
+    dependencies = []
+    
+    for i, script in enumerate(scripts):
+        safe_name = script['name'].replace('-', '_').replace('.', '_')
+        task_definitions.append(f"""
+    {safe_name}_task = DockerOperator(
+        task_id="{script['name']}",
+        image="semt-pipeline:latest", 
+        command=["python", "/app/scripts/{script['filename']}"],
+        environment={{"RUN_ID": "{{{{ ds_nodash }}}}_{{{{ ts_nodash }}}}"}},
+        do_xcom_push=True,
+        auto_remove=True,
+    )""")
+        
+        if i == 0:
+            dependencies.append(f"find_input_file_task >> {safe_name}_task")
+        else:
+            prev_safe_name = scripts[i-1]['name'].replace('-', '_').replace('.', '_')
+            dependencies.append(f"{prev_safe_name}_task >> {safe_name}_task")
+    
+    return f'''# Minimal DAG - {dag_name}
+from airflow.models.dag import DAG
+from airflow.providers.docker.operators.docker import DockerOperator
+from airflow.operators.python import PythonOperator
+import pendulum
+
+def find_latest_csv_file(**kwargs):
+    import glob, os
+    files = glob.glob("/app/data/*.csv")
+    return max(files, key=os.path.getmtime) if files else "/app/data/default.csv"
+
+with DAG(
+    dag_id="{dag_name.lower().replace(' ', '_')}",
+    start_date=pendulum.datetime(2025, 1, 1, tz="UTC"),
+    catchup=False,
+    schedule=None,
+) as dag:
+    
+    find_input_file_task = PythonOperator(
+        task_id="find_input_file",
+        python_callable=find_latest_csv_file,
+    )
+    {"".join(task_definitions)}
+    
+    # Dependencies
+    {chr(10).join("    " + dep for dep in dependencies)}
+'''

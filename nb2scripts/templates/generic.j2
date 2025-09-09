@@ -1,0 +1,26 @@
+def run_{{ op.op_type }}_operation_{{ index }}(config: Config, file_manager: PipelineFileManager):
+    """
+    {{ op.op_type | title }} operation: {{ op.name }}
+    """
+    logger.info("=== STARTING {{ op.op_type.upper() }} OPERATION: {{ op.name }} ===")
+    
+    # Original notebook code (cleaned):
+    {% if op.chunks -%}
+    {# LLM-based: use chunks #}
+    {% for chunk in op.chunks -%}
+    {% if chunk.language == "python" or chunk.language == "mixed" -%}
+    # --- Chunk {{ loop.index }} ({{ chunk.language }}) ---
+{{ chunk.text | indent(4, first=true) }}
+    
+    {% endif -%}
+    {% endfor -%}
+    {% else -%}
+    {# Heuristic-based: use cells #}
+    {% for cell in op.code_cells -%}
+    # --- Cell {{ loop.index }} ---
+{{ cell.source | indent(4, first=true) }}
+    
+    {% endfor -%}
+    {% endif %}
+    
+    logger.info("=== {{ op.op_type.upper() }} OPERATION COMPLETED ===")

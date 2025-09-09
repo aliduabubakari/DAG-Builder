@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""
+{{ script.name }}.py - Auto-generated script
+Generated on {{ timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+
+This script contains {{ operations|length }} operation(s):
+{%- for op in operations %}
+- {{ op.op_type }}: {{ op.name }}
+{%- endfor %}
+"""
+
+import os
+import time
+import datetime
+import logging
+import pandas as pd
+import sys
+from typing import Optional, Dict, Any
+
+from scripts.utils.sustainability_utils import start_sustainability_metrics, save_sustainability_metrics
+from scripts.utils.file_utils import PipelineFileManager, get_input_basename
+
+from semt_py.auth_manager import AuthManager
+from semt_py.reconciliation_manager import ReconciliationManager
+from semt_py.extension_manager import ExtensionManager
+from semt_py.utils import Utility
+from semt_py.dataset_manager import DatasetManager
+from semt_py.table_manager import TableManager
+from semt_py.modification_manager import ModificationManager
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class Config:
+    def __init__(self):
+        # API Configuration
+        base_url = os.environ.get('API_BASE_URL', 'http://localhost:3003')
+        self.auth_api_url = f"{base_url}/api"
+        self.table_base_url = base_url
+        
+        self.username = os.environ.get('API_USERNAME', 'test')
+        self.password = os.environ.get('API_PASSWORD', 'test')
+        
+        # Input/Output Configuration
+        self.input_file_path = os.environ.get('INPUT_FILE_PATH')
+        self.data_dir = os.environ.get('DATA_DIR', '/app/data')
+        
+        # Pipeline Configuration
+        self.dataset_id = os.environ.get('DATASET_ID', '5')
+        self.table_id = os.environ.get('TABLE_ID')
+        
+        # Hybrid Architecture: Run management
+        self.run_id = os.environ.get('RUN_ID', datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
+        self.stage_name = os.environ.get('STAGE_NAME', '{{ script.name }}')
+        self.stage_number = int(os.environ.get('STAGE_NUMBER', '{{ script.stage }}'))
+        
+        # Generate input basename for logging
+        if self.input_file_path:
+            self.input_basename = get_input_basename(self.input_file_path)
+        else:
+            self.input_basename = 'unknown'
+
+        # Validation
+        if not all([self.table_base_url, self.username, self.password]):
+            raise ValueError("Missing API credentials")
+
+        # Comprehensive logging
+        logger.info(f"=== {self.stage_name.upper()} CONFIGURATION (HYBRID) ===")
+        logger.info(f"Run ID: {self.run_id}")
+        logger.info(f"Stage: {self.stage_name} (#{self.stage_number})")
+        logger.info(f"Data directory: {self.data_dir}")
+        logger.info(f"Dataset ID: {self.dataset_id}")
+        if self.table_id:
+            logger.info(f"Table ID: {self.table_id}")
+
+def get_input_with_default(prompt: str, default: str) -> str:
+    """Get user input with default value - used for compatibility."""
+    return default  # In production, we use environment variables instead

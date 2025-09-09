@@ -1,0 +1,58 @@
+def run_reconcile_operation_{{ index }}(config: Config, file_manager: PipelineFileManager):
+    """
+    Reconcile operation: {{ op.name }}
+    {% if op.meta.column_name -%}
+    Column: {{ op.meta.column_name }}
+    {%- endif %}
+    {% if op.meta.reconciliator_id -%}
+    Reconciliator: {{ op.meta.reconciliator_id }}
+    {%- endif %}
+    """
+    logger.info("=== STARTING RECONCILE OPERATION: {{ op.name }} ===")
+    
+    # Load current state
+    current_data = file_manager.load_current_state()
+    if not current_data:
+        raise RuntimeError("No current state found from previous stage")
+    
+    # Set up API managers
+    auth_manager = AuthManager(config.auth_api_url, config.username, config.password)
+    token = auth_manager.get_token()
+    table_manager = TableManager(config.table_base_url, auth_manager)
+    reconciliation_manager = ReconciliationManager(config.table_base_url, auth_manager)
+    utility = Utility(config.table_base_url, auth_manager)
+    
+    # Get table ID
+    table_id = config.table_id
+    if not table_id and isinstance(current_data, dict) and 'table' in current_data:
+        table_id = current_data['table'].get('id')
+    
+    if not table_id:
+        raise ValueError("No table ID available for reconciliation")
+    
+    # Original notebook code (cleaned):
+    {% if op.chunks -%}
+    {# LLM-based: use chunks #}
+    {% for chunk in op.chunks -%}
+    {% if chunk.language == "python" or chunk.language == "mixed" -%}
+    # --- Chunk {{ loop.index }} ({{ chunk.language }}) ---
+{{ chunk.text | indent(4, first=true) }}
+    
+    {% endif -%}
+    {% endfor -%}
+    {% else -%}
+    {# Heuristic-based: use cells #}
+    {% for cell in op.code_cells -%}
+    # --- Cell {{ loop.index }} ---
+{{ cell.source | indent(4, first=true) }}
+    
+    {% endfor -%}
+    {% endif %}
+    
+    # Store results for next stage
+    updated_table_data = table_manager.get_table(config.dataset_id, table_id)
+    file_manager.save_stage_snapshot(f"reconcile_{{ index }}", updated_table_data, config.stage_number)
+    file_manager.save_current_state(updated_table_data)
+    
+    logger.info("=== RECONCILE OPERATION COMPLETED ===")
+    return updated_table_data
